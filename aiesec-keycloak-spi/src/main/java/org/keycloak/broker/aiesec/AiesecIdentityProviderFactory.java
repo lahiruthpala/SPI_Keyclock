@@ -13,8 +13,8 @@ import java.util.List;
 public class AiesecIdentityProviderFactory extends AbstractIdentityProviderFactory<AiesecIdentityProvider>
         implements SocialIdentityProviderFactory<AiesecIdentityProvider> {
 
-    public static final String PROVIDER_ID = "aiesec";
-    public static final String PROVIDER_NAME = "AIESEC";
+    public static final String PROVIDER_ID = "aiesec-lk";
+    private static final String PROVIDER_NAME = "AIESEC (Sri Lanka)";
 
     public static final String CLIENT_ID = "clientId";
     public static final String CLIENT_SECRET = "clientSecret";

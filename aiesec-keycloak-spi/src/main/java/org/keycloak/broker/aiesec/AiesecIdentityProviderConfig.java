@@ -20,4 +20,12 @@ public class AiesecIdentityProviderConfig extends OAuth2IdentityProviderConfig {
             setTokenUrl("https://auth.aiesec.org/oauth/token");
         }
     }
+
+    public String getClientId() {
+        return getConfig().get("clientId");
+    }
+
+    public String getClientSecret() {
+        return getConfig().get("clientSecret");
+    }
 }
