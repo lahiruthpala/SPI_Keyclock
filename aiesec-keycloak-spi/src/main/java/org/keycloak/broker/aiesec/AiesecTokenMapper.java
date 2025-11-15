@@ -4,6 +4,7 @@ import org.keycloak.models.*;
 import org.keycloak.protocol.oidc.mappers.*;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.representations.IDToken;
+import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +14,7 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
 
     private static final String PROVIDER_ID = "aiesec-token-mapper";
     private static final List<ProviderConfigProperty> configProperties = new ArrayList<>();
+    private static final Logger logger = Logger.getLogger(AiesecTokenMapper.class);
 
     static {
         OIDCAttributeMapperHelper.addIncludeInTokensConfig(configProperties, AiesecTokenMapper.class);
@@ -47,6 +49,8 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
     protected void setClaim(IDToken token, ProtocolMapperModel mappingModel, UserSessionModel userSession,
                             KeycloakSession keycloakSession, ClientSessionContext clientSessionCtx) {
 
+        logger.debugf("AiesecTokenMapper.setClaim called for userSession=%s client=%s", userSession == null ? "null" : userSession.getId(), clientSessionCtx == null ? "null" : clientSessionCtx.getClientSession().getClient().getClientId());
+
         UserModel user = userSession.getUser();
         RealmModel realm = userSession.getRealm();
 
@@ -55,13 +59,17 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
                 .getFederatedIdentity(realm, user, AiesecIdentityProviderFactory.PROVIDER_ID);
 
         if (federatedIdentity == null) {
+            logger.debugf("No AIESEC federated identity for user=%s", user == null ? "null" : user.getUsername());
             return;
         }
+
+        logger.debugf("Found AIESEC federated identity for user=%s", user.getUsername());
 
         // Check if token needs refresh
         boolean shouldRefresh = shouldRefreshToken(federatedIdentity);
 
         if (shouldRefresh) {
+            logger.debugf("AIESEC token should be refreshed for user=%s", user.getUsername());
             // Refresh the AIESEC token
             refreshAiesecToken(keycloakSession, user, realm, federatedIdentity);
         }
@@ -70,18 +78,23 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
         String accessToken = getStoredAccessToken(user);
         String refreshToken = federatedIdentity.getToken();
 
+        logger.debugf("Access token from attributes present=%b refresh token present=%b", accessToken != null, refreshToken != null);
+
         if (accessToken != null) {
             token.setOtherClaims("aiesec_access_token", accessToken);
+            logger.debugf("Injected aiesec_access_token claim for user=%s", user.getUsername());
         }
 
         if (refreshToken != null) {
             token.setOtherClaims("aiesec_refresh_token", refreshToken);
+            logger.debugf("Injected aiesec_refresh_token claim for user=%s", user.getUsername());
         }
 
         // Add token expiration info if available
         Long expiresAt = getTokenExpirationTime(federatedIdentity);
         if (expiresAt != null) {
             token.setOtherClaims("aiesec_token_expires_at", expiresAt);
+            logger.debugf("Injected aiesec_token_expires_at claim=%d for user=%s", expiresAt, user.getUsername());
         }
     }
 
@@ -101,6 +114,7 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
             // Check if token needs refresh based on user attributes
             String expiresAtStr = user.getFirstAttribute("aiesec_token_expires_at");
             if (expiresAtStr == null || expiresAtStr.isEmpty()) {
+                logger.debugf("No aiesec_token_expires_at attribute for user=%s", user.getUsername());
                 return;
             }
 
@@ -109,6 +123,7 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
 
             // Only refresh if token expires in less than 5 minutes
             if ((expiresAt - currentTime) >= 300) {
+                logger.debugf("AIESEC token for user=%s not expiring soon (expiresAt=%d current=%d)", user.getUsername(), expiresAt, currentTime);
                 return;
             }
 
@@ -117,6 +132,7 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
                     AiesecIdentityProviderFactory.PROVIDER_ID);
 
             if (providerModel == null) {
+                logger.warnf("No provider model found for alias=%s", AiesecIdentityProviderFactory.PROVIDER_ID);
                 return;
             }
 
@@ -125,9 +141,11 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
             // Use callback handler to refresh tokens
             AiesecIdentityProviderCallback.refreshAndStoreTokens(session, realm, user, config);
 
+            logger.debugf("Called refreshAndStoreTokens for user=%s", user.getUsername());
+
         } catch (Exception e) {
             // Log but don't fail the token generation
-            System.err.println("Failed to refresh AIESEC token: " + e.getMessage());
+            logger.errorf(e, "Failed to refresh AIESEC token for user=%s", user == null ? "null" : user.getUsername());
         }
     }
 

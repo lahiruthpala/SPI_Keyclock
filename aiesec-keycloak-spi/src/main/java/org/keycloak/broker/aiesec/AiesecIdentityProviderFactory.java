@@ -20,25 +20,28 @@ public class AiesecIdentityProviderFactory extends AbstractIdentityProviderFacto
     public static final String CLIENT_SECRET = "clientSecret";
 
     @Override
-    public String getName() {
-        return PROVIDER_NAME;
-    }
-
-    @Override
-    public AiesecIdentityProvider create(KeycloakSession session, IdentityProviderModel model) {
-        return new AiesecIdentityProvider(session, new AiesecIdentityProviderConfig(model));
-    }
-
-    @Override
     public String getId() {
         return PROVIDER_ID;
     }
 
     @Override
+    public String getName() {
+        return PROVIDER_NAME;
+    }
+
+    //When Keycloak needs to handle a login, it calls this function to create a new, ready-to-use instance of your AiesecIdentityProvider
+    @Override
+    public AiesecIdentityProvider create(KeycloakSession session, IdentityProviderModel model) {
+        return new AiesecIdentityProvider(session, new AiesecIdentityProviderConfig(model));
+    }
+
+    //Creates a new, blank configuration object.
+    @Override
     public AiesecIdentityProviderConfig createConfig() {
         return new AiesecIdentityProviderConfig();
     }
 
+    //Defines the settings that appear in the admin UI for this provider—specifically, the "Client ID" and "Client Secret" text fields.
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
         List<ProviderConfigProperty> configProperties = new ArrayList<>();

@@ -73,6 +73,8 @@ public class AiesecIdentityProvider extends AbstractOAuth2IdentityProvider<Aiese
             context.getContextData().put("AIESEC_ACCESS_TOKEN", accessToken);
             context.setToken(accessToken);  // This stores in federated identity
 
+            logger.infof("Context: %s", context.getContextData().toString());
+
             return context;
         } catch (Exception e) {
             logger.error("Failed to fetch AIESEC user", e);
@@ -113,7 +115,6 @@ public class AiesecIdentityProvider extends AbstractOAuth2IdentityProvider<Aiese
                 .param("client_secret", getConfig().getClientSecret());
     }
 
-    // Not an override of a superclass method - exchange handled manually
     protected Response exchangeExternalToken(String authorizationCode) {
         // Exchange authorization code for AIESEC tokens
         return exchangeStoredToken(session, authorizationCode);
@@ -144,6 +145,7 @@ public class AiesecIdentityProvider extends AbstractOAuth2IdentityProvider<Aiese
 
     @Override
     protected String extractTokenFromResponse(String response, String tokenName) {
+        logger.infof("Inside the extractTokenFromResponse");
         if (response == null) return null;
 
         try {
