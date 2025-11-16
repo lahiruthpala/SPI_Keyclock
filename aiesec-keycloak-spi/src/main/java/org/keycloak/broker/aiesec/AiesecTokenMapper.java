@@ -5,16 +5,18 @@ import org.keycloak.protocol.oidc.mappers.*;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.representations.IDToken;
 import org.jboss.logging.Logger;
-
 import java.util.ArrayList;
 import java.util.List;
+import org.keycloak.models.Constants;
+import org.keycloak.models.IdentityProviderModel;
+import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 
 public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
         implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper {
 
     private static final String PROVIDER_ID = "aiesec-token-mapper";
-    private static final List<ProviderConfigProperty> configProperties = new ArrayList<>();
     private static final Logger logger = Logger.getLogger(AiesecTokenMapper.class);
+    private static final List<ProviderConfigProperty> configProperties = new ArrayList<>();
 
     static {
         OIDCAttributeMapperHelper.addIncludeInTokensConfig(configProperties, AiesecTokenMapper.class);
@@ -22,135 +24,101 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
 
     @Override
     public String getDisplayCategory() {
-        return TOKEN_MAPPER_CATEGORY;
+        logger.infof("getDisplayCategory() called");
+        String cat = TOKEN_MAPPER_CATEGORY;
+        logger.infof("getDisplayCategory returning: %s", cat);
+        return cat;
     }
 
     @Override
     public String getDisplayType() {
-        return "AIESEC Token Mapper";
+        logger.infof("getDisplayType() called");
+        String t = "AIESEC Token Mapper";
+        logger.infof("getDisplayType returning: %s", t);
+        return t;
     }
 
     @Override
     public String getHelpText() {
-        return "Injects AIESEC access token and refresh token into Keycloak tokens";
+        logger.infof("getHelpText() called");
+        String help = "Injects AIESEC access token into Keycloak tokens";
+        logger.infof("getHelpText returning: %s", help);
+        return help;
     }
 
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
+        logger.infof("getConfigProperties() called - configProperties size: %d", configProperties.size());
         return configProperties;
     }
 
     @Override
     public String getId() {
+        logger.infof("getId() called - PROVIDER_ID: %s", PROVIDER_ID);
         return PROVIDER_ID;
     }
 
     @Override
     protected void setClaim(IDToken token, ProtocolMapperModel mappingModel, UserSessionModel userSession,
                             KeycloakSession keycloakSession, ClientSessionContext clientSessionCtx) {
+        logger.infof("setClaim() called with token=%s, mappingModel=%s, userSession=%s, keycloakSession=%s, clientSessionCtx=%s",
+                token, mappingModel, userSession, keycloakSession, clientSessionCtx);
 
-        logger.debugf("AiesecTokenMapper.setClaim called for userSession=%s client=%s", userSession == null ? "null" : userSession.getId(), clientSessionCtx == null ? "null" : clientSessionCtx.getClientSession().getClient().getClientId());
-
-        UserModel user = userSession.getUser();
-        RealmModel realm = userSession.getRealm();
-
-        // Get the AIESEC federated identity
-        FederatedIdentityModel federatedIdentity = keycloakSession.users()
-                .getFederatedIdentity(realm, user, AiesecIdentityProviderFactory.PROVIDER_ID);
-
-        if (federatedIdentity == null) {
-            logger.debugf("No AIESEC federated identity for user=%s", user == null ? "null" : user.getUsername());
+        if (userSession == null) {
+            logger.infof("userSession is null - exiting setClaim");
             return;
         }
 
-        logger.debugf("Found AIESEC federated identity for user=%s", user.getUsername());
+        UserModel user = userSession.getUser();
+        RealmModel realm = userSession.getRealm();
+        logger.infof("setClaim - resolved user=%s, realm=%s", user, realm);
 
-        // Check if token needs refresh
-        boolean shouldRefresh = shouldRefreshToken(federatedIdentity);
+        // Get the alias of the IdP the user *actually* used to log in (e.g., "aiesec-login")
+        String idpAlias = userSession.getNote("identity_provider");
 
-        if (shouldRefresh) {
-            logger.debugf("AIESEC token should be refreshed for user=%s", user.getUsername());
-            // Refresh the AIESEC token
-            refreshAiesecToken(keycloakSession, user, realm, federatedIdentity);
+        if (idpAlias == null) {
+            logger.infof("User did not log in via an IdP (idpAlias is null). Skipping mapper.");
+            return;
         }
 
-        // Add AIESEC tokens to the Keycloak token claims
-        String accessToken = getStoredAccessToken(user);
-        String refreshToken = federatedIdentity.getToken();
-
-        logger.debugf("Access token from attributes present=%b refresh token present=%b", accessToken != null, refreshToken != null);
-
-        if (accessToken != null) {
-            token.setOtherClaims("aiesec_access_token", accessToken);
-            logger.debugf("Injected aiesec_access_token claim for user=%s", user.getUsername());
+        // Get the configuration model for that IdP
+        IdentityProviderModel idpModel = realm.getIdentityProviderByAlias(idpAlias);
+        if (idpModel == null) {
+            logger.infof("Could not find IdP model for alias: %s", idpAlias);
+            return;
         }
 
-        if (refreshToken != null) {
-            token.setOtherClaims("aiesec_refresh_token", refreshToken);
-            logger.debugf("Injected aiesec_refresh_token claim for user=%s", user.getUsername());
+        // Check if the IdP they used is *our* AIESEC provider
+        if (!AiesecIdentityProviderFactory.PROVIDER_ID.equals(idpModel.getProviderId())) {
+            logger.infof("User logged in with IdP '%s', but it is not an AIESEC provider (its providerId is '%s'). Skipping.",
+                    idpAlias, idpModel.getProviderId());
+            return;
         }
 
-        // Add token expiration info if available
-        Long expiresAt = getTokenExpirationTime(federatedIdentity);
-        if (expiresAt != null) {
-            token.setOtherClaims("aiesec_token_expires_at", expiresAt);
-            logger.debugf("Injected aiesec_token_expires_at claim=%d for user=%s", expiresAt, user.getUsername());
-        }
-    }
+        // --- THIS IS THE FIX ---
+        // Look up the federated identity using the *correct alias* (idpAlias)
+        // instead of the hardcoded factory ID.
+        FederatedIdentityModel federatedIdentity = keycloakSession.users()
+                .getFederatedIdentity(realm, user, idpAlias);
 
-    private boolean shouldRefreshToken(FederatedIdentityModel federatedIdentity) {
-        // This method is called but actual refresh happens in refreshAiesecToken
-        return true; // Always check and refresh if needed
-    }
+        logger.infof("setClaim - federatedIdentity resolved (using alias '%s'): %s", idpAlias, federatedIdentity);
 
-    private Long getTokenExpirationTime(FederatedIdentityModel federatedIdentity) {
-        // Not used anymore, kept for compatibility
-        return null;
-    }
+        if (federatedIdentity != null) {
+            logger.infof("federatedIdentity is not null for user %s", user != null ? user.getUsername() : "<null-user>");
+            String accessToken = federatedIdentity.getToken();
+            logger.infof("retrieved accessToken (raw)=%s", accessToken);
 
-    private void refreshAiesecToken(KeycloakSession session, UserModel user,
-                                    RealmModel realm, FederatedIdentityModel federatedIdentity) {
-        try {
-            // Check if token needs refresh based on user attributes
-            String expiresAtStr = user.getFirstAttribute("aiesec_token_expires_at");
-            if (expiresAtStr == null || expiresAtStr.isEmpty()) {
-                logger.debugf("No aiesec_token_expires_at attribute for user=%s", user.getUsername());
-                return;
+            if (accessToken != null && !accessToken.isEmpty()) {
+                logger.infof("accessToken is non-empty - injecting into token claim 'aiesec_access_token'");
+                token.getOtherClaims().put("aiesec_access_token", accessToken);
+                logger.infof("Successfully injected AIESEC token for user %s", user.getUsername());
+            } else {
+                logger.infof("AIESEC identity found but accessToken was null or empty for user %s", user.getUsername());
             }
-
-            long expiresAt = Long.parseLong(expiresAtStr);
-            long currentTime = System.currentTimeMillis() / 1000;
-
-            // Only refresh if token expires in less than 5 minutes
-            if ((expiresAt - currentTime) >= 300) {
-                logger.debugf("AIESEC token for user=%s not expiring soon (expiresAt=%d current=%d)", user.getUsername(), expiresAt, currentTime);
-                return;
-            }
-
-            // Get the identity provider config
-            IdentityProviderModel providerModel = realm.getIdentityProviderByAlias(
-                    AiesecIdentityProviderFactory.PROVIDER_ID);
-
-            if (providerModel == null) {
-                logger.warnf("No provider model found for alias=%s", AiesecIdentityProviderFactory.PROVIDER_ID);
-                return;
-            }
-
-            AiesecIdentityProviderConfig config = new AiesecIdentityProviderConfig(providerModel);
-
-            // Use callback handler to refresh tokens
-            AiesecIdentityProviderCallback.refreshAndStoreTokens(session, realm, user, config);
-
-            logger.debugf("Called refreshAndStoreTokens for user=%s", user.getUsername());
-
-        } catch (Exception e) {
-            // Log but don't fail the token generation
-            logger.errorf(e, "Failed to refresh AIESEC token for user=%s", user == null ? "null" : user.getUsername());
+        } else {
+            logger.infof("No AIESEC federated identity found for user %s (using alias '%s')", user != null ? user.getUsername() : "<null-user>", idpAlias);
         }
-    }
 
-    private String getStoredAccessToken(UserModel user) {
-        // Get access token from user attributes
-        return user.getFirstAttribute("aiesec_access_token");
+        logger.infof("setClaim() completed - token otherClaims now contains: %s", token.getOtherClaims());
     }
 }
