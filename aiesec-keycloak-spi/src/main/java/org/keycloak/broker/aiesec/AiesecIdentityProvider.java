@@ -1,5 +1,6 @@
 package org.keycloak.broker.aiesec;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -14,10 +15,15 @@ import org.keycloak.models.KeycloakSession;
 import org.jboss.logging.Logger;
 import org.keycloak.broker.provider.IdentityBrokerException;
 
+import java.io.IOException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 public class AiesecIdentityProvider extends AbstractOAuth2IdentityProvider<AiesecIdentityProviderConfig>
         implements SocialIdentityProvider<AiesecIdentityProviderConfig> {
 
     private static final Logger logger = Logger.getLogger(AiesecIdentityProvider.class); // Define logger
+    protected static ObjectMapper mapper = new ObjectMapper();
     public static final String DEFAULT_SCOPE = "";
     public static final String AUTH_URL = "https://auth.aiesec.org/oauth/authorize";
     public static final String TOKEN_URL = "https://auth.aiesec.org/oauth/token";
@@ -50,6 +56,78 @@ public class AiesecIdentityProvider extends AbstractOAuth2IdentityProvider<Aiese
     }
 
     @Override
+    public BrokeredIdentityContext getFederatedIdentity(String response) {
+
+        logger.infof("getFederatedIdentity() called with response: %s", response);
+        String accessToken = getResponseProperty(response, "access_token");
+        String refreshToken = getResponseProperty(response, "refresh_token");
+        String expiresInStr = getResponseProperty(response, "expires_in");
+        String createdAtStr = getResponseProperty(response, "created_at");
+
+        logger.infof("accessToken (len)=%d", accessToken != null ? accessToken.length() : 0);
+        logger.infof("expires_in=%s", expiresInStr);
+        logger.infof("created_at=%s", createdAtStr);
+
+        if (expiresInStr == null || createdAtStr == null) {
+            logger.errorf("Missing expires_in or created_at in token response: expires_in=%s created_at=%s", expiresInStr, createdAtStr);
+            throw new IdentityBrokerException("Failed to obtain token timestamps from token response.");
+        }
+
+        long expiresIn = Long.parseLong(expiresInStr);
+        long created_at = Long.parseLong(createdAtStr);
+        long expiresAt = created_at + expiresIn;
+
+        if (accessToken == null) {
+            logger.error("No access_token in token response");
+            throw new IdentityBrokerException("Failed to obtain AIESEC access token from token response.");
+        }
+        if (refreshToken == null) {
+            logger.warn("No refresh_token in token response. Token refresh will not be possible.");
+        }
+
+        logger.infof("Successfully obtained tokens: accessToken (len)=%d, refreshToken (len)=%d, expiresAt=%d",
+                accessToken.length(), (refreshToken != null ? refreshToken.length() : 0), expiresAt);
+
+        // Now, use the access token to get the user's profile
+        BrokeredIdentityContext context = doGetFederatedIdentity(accessToken);
+
+        // --- Store ALL tokens in the context ---
+        // This will be saved to the user attributes when the user is created/linked
+        context.setUserAttribute("aiesec_access_token", accessToken);
+        context.setUserAttribute("aiesec_token_expires_at", String.valueOf(expiresAt));
+        if (refreshToken != null) {
+            context.setUserAttribute("aiesec_refresh_token", refreshToken);
+            // This stores the refresh token in Keycloak's standard persistent location
+            context.setToken(refreshToken);
+        }
+
+        logger.infof("Stored all tokens in BrokeredIdentityContext for user %s", context.getUsername());
+
+        return context;
+    }
+
+    private String getResponseProperty(String response, String propertyName){
+        if (response == null) {
+            return null;
+        } else if (response.startsWith("{")) {
+            try {
+                JsonNode node = mapper.readTree(response);
+                if (node.has(propertyName)) {
+                    String s = node.get(propertyName).asText();
+                    return s != null && !s.trim().isEmpty() ? s : null;
+                } else {
+                    return null;
+                }
+            } catch (IOException e) {
+                throw new IdentityBrokerException("Could not extract property [" + propertyName + "] from response [" + response + "] due: " + e.getMessage(), e);
+            }
+        } else {
+            Matcher matcher = Pattern.compile(propertyName + "=([^&]+)").matcher(response);
+            return matcher.find() ? matcher.group(1) : null;
+        }
+    }
+
+    @Override
     protected BrokeredIdentityContext doGetFederatedIdentity(String accessToken) {
         logger.infof("doGetFederatedIdentity() called with accessToken (len)=%s",
                 accessToken != null ? accessToken.length() : "<null>");
@@ -58,11 +136,8 @@ public class AiesecIdentityProvider extends AbstractOAuth2IdentityProvider<Aiese
         payload.put("query", "query { currentPerson { id email first_name last_name profile_photo current_status current_office { id } } }");
 
         try {
-            String previewToken = "<null>";
-            if (accessToken != null) {
-                previewToken = accessToken.length() > 10 ? accessToken.substring(0, 10) + "..." : accessToken;
-            }
-            logger.infof("Fetching AIESEC identity with token preview: %s", previewToken);
+
+            logger.infof("Fetching AIESEC identity with token : %s", accessToken);
 
             JsonNode response = SimpleHttp.doPost(GRAPHQL_URL, session)
                     .header("authorization", accessToken)

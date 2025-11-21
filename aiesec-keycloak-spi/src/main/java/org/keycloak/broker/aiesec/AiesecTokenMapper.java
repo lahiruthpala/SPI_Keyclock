@@ -7,14 +7,13 @@ import org.keycloak.representations.IDToken;
 import org.jboss.logging.Logger;
 import java.util.ArrayList;
 import java.util.List;
-import org.keycloak.models.Constants;
 import org.keycloak.models.IdentityProviderModel;
-import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 
 public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
         implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper {
 
     private static final String PROVIDER_ID = "aiesec-token-mapper";
+    private static final long EXPIRATION_BUFFER_SECONDS = 300;
     private static final Logger logger = Logger.getLogger(AiesecTokenMapper.class);
     private static final List<ProviderConfigProperty> configProperties = new ArrayList<>();
 
@@ -95,9 +94,58 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
             return;
         }
 
-        // --- THIS IS THE FIX ---
-        // Look up the federated identity using the *correct alias* (idpAlias)
-        // instead of the hardcoded factory ID.
+        // --- DEBUG: Log all user attributes ---
+        logger.infof("--- DUMPING ATTRIBUTES FOR USER: %s ---", user.getUsername());
+        java.util.Map<String, java.util.List<String>> attributes = user.getAttributes();
+        if (attributes == null || attributes.isEmpty()) {
+            logger.infof("User has no attributes.");
+        } else {
+            for (java.util.Map.Entry<String, java.util.List<String>> entry : attributes.entrySet()) {
+                String key = entry.getKey();
+                java.util.List<String> values = entry.getValue();
+                // Log the key and the list of values (attributes can have multiple values)
+                logger.infof("  ATTR [%s]: %s", key, values);
+            }
+        }
+        logger.infof("--- END OF ATTRIBUTE DUMP ---");
+
+        // --- Refresh Logic Starts Here ---
+        String accessToken = user.getFirstAttribute("aiesec_access_token");
+        String refreshToken = user.getFirstAttribute("aiesec_refresh_token");
+        String expiresAtStr = user.getFirstAttribute("aiesec_token_expires_at");
+
+        if (refreshToken == null || refreshToken.isEmpty()) {
+            logger.warnf("User %s has no AIESEC refresh token. Cannot check for refresh.", user.getUsername());
+            // We can still try to inject the access token if it exists
+        } else if (expiresAtStr == null) {
+            logger.warnf("User %s has no 'aiesec_token_expires_at' attribute. Cannot check for refresh.", user.getUsername());
+        } else {
+            try {
+                long expiresAt = Long.parseLong(expiresAtStr);
+                long now = System.currentTimeMillis() / 1000;
+
+                // Check if (expiration - 5 minutes) is already in the past
+                if ((expiresAt - EXPIRATION_BUFFER_SECONDS) <= now) {
+                    logger.infof("AIESEC access token for user %s is expired or expiring soon. Attempting refresh.", user.getUsername());
+
+                    // Call the callback to perform the refresh
+                    accessToken = AiesecIdentityProviderCallback.refreshAndStoreTokens(keycloakSession, realm, user, idpModel);
+
+                    logger.infof("AIESEC token refresh successful for user %s.", user.getUsername());
+                } else {
+                    logger.infof("AIESEC access token for user %s is still valid.", user.getUsername());
+                }
+
+            } catch (NumberFormatException e) {
+                logger.warnf(e, "Could not parse 'aiesec_token_expires_at' for user %s. Value was: %s", user.getUsername(), expiresAtStr);
+            } catch (Exception e) {
+                // This catches a failed refresh from the callback
+                logger.errorf(e, "Failed to refresh AIESEC token for user %s. Token will not be injected.", user.getUsername());
+                // Do not inject any token if refresh failed, as it's likely invalid.
+                return;
+            }
+        }
+
         FederatedIdentityModel federatedIdentity = keycloakSession.users()
                 .getFederatedIdentity(realm, user, idpAlias);
 
@@ -105,7 +153,6 @@ public class AiesecTokenMapper extends AbstractOIDCProtocolMapper
 
         if (federatedIdentity != null) {
             logger.infof("federatedIdentity is not null for user %s", user != null ? user.getUsername() : "<null-user>");
-            String accessToken = federatedIdentity.getToken();
             logger.infof("retrieved accessToken (raw)=%s", accessToken);
 
             if (accessToken != null && !accessToken.isEmpty()) {
